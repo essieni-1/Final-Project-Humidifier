@@ -45,3 +45,11 @@ $$Threshold = MIN + \frac{Raw \times (MAX - MIN)}{4095}$$
 
 ---
 
+### Humidity Sensing (I2C)
+The `humidity_task` communicates with the **DHT20** sensor. It triggers a measurement, waits for the hardware to process, and then converts the raw 20-bit digital signal into a percentage using the official DHT20 transfer function:
+
+$$ RH (\\%)  = \frac{S_{rh}}{2^{20}} \times 100\%$$
+
+* **Update Rate:** Every 2 seconds.
+* **Precision:** 20-bit resolution ($2^{20} = 1,048,576$ discrete steps).
+---

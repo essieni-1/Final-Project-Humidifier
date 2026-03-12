@@ -108,7 +108,7 @@ static uint8_t checksum_frame(const uint8_t *frame, int len) {
 }
 // Builds and sends a message to CHANGE a setting (like mist power)
 static void send_set_command(uint8_t cmd, uint8_t data) {
-// Create the 7-byte packet: [Header] [IDs] [Command] [Length] [Value] [Checksum]    uint8_t frame[] = { HEADER, MODULE_ID_HIGH, MODULE_ID_LOW, cmd, 0x01, data, 0x00 };   
+// Create the 7-byte packet: [Header] [IDs] [Command] [Length] [Value] [Checksum]   
     uint8_t frame[] = { HEADER, MODULE_ID_HIGH, MODULE_ID_LOW, cmd, 0x01, data, 0x00 };
     // Add up the first 6 bytes to create the safety checksum at the end
     frame[6] = checksum_frame(frame, 6);

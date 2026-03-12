@@ -98,59 +98,74 @@ static esp_err_t uart_module_init(void) {
     uart_param_config(UART_NUM, &uart_config);
     return uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
-
+/**
+ * Standard checksum: sum of all bytes in the frame before the checksum byte.
+ */
 static uint8_t checksum_frame(const uint8_t *frame, int len) {
     uint8_t checksum = 0;
     for (int i = 0; i < len; i++) checksum += frame[i];
     return checksum;
 }
-
+// Builds and sends a message to CHANGE a setting (like mist power)
 static void send_set_command(uint8_t cmd, uint8_t data) {
+// Create the 7-byte packet: [Header] [IDs] [Command] [Length] [Value] [Checksum]    uint8_t frame[] = { HEADER, MODULE_ID_HIGH, MODULE_ID_LOW, cmd, 0x01, data, 0x00 };   
     uint8_t frame[] = { HEADER, MODULE_ID_HIGH, MODULE_ID_LOW, cmd, 0x01, data, 0x00 };
+    // Add up the first 6 bytes to create the safety checksum at the end
     frame[6] = checksum_frame(frame, 6);
+    // Send the finished packet over the UART wires
     uart_write_bytes(UART_NUM, (const char*)frame, sizeof(frame));
 }
-
+// Builds and sends a message to ASK for info (like water level)
 static void send_read_command(uint8_t cmd) {
+    // Same as above, but we use 0x00 for the data since we're just asking a question
     uint8_t frame[] = { HEADER, MODULE_ID_HIGH, MODULE_ID_LOW, cmd, 0x01, 0x00, 0x00 };
     frame[6] = checksum_frame(frame, 6);
     uart_write_bytes(UART_NUM, (const char*)frame, sizeof(frame));
 }
-
+/**
+ * Generic responder for UART module. Parses the incoming frame and verifies checksum.
+ */
 static int receive_module_response(uint8_t *data, uint8_t max_len, uint8_t *status) {
     uint8_t rxbuf[16];
     int len = uart_read_bytes(UART_NUM, rxbuf, sizeof(rxbuf), pdMS_TO_TICKS(UART_WAIT_TIMEOUT_MS));
-    if (len < 7) return -1;
-    if (rxbuf[0] != HEADER) return -2;
+    if (len < 7) return -1; // Frame too short
+    if (rxbuf[0] != HEADER) return -2; // Wrong header
     if (rxbuf[1] != MODULE_ID_HIGH || rxbuf[2] != MODULE_ID_LOW) return -5;
     *status = rxbuf[3];
     uint8_t data_len = rxbuf[4];
     if (data_len > max_len) return -3;
     if (len < (6 + data_len)) return -1;
+    // Checksum verification
     uint8_t checksum = checksum_frame(rxbuf, 5 + data_len);
     if (checksum != rxbuf[5 + data_len]) return -4;
     for (int i = 0; i < data_len; i++) data[i] = rxbuf[5 + i];
     return data_len;
 }
-
+// Helper: Wait for an "OK" or "Success" reply after we change a setting
 static int receive_set_response(uint8_t *ack, uint8_t *status) {
+    // We pass '1' as max_len because SET commands typically return a 1-byte ACK
     return receive_module_response(ack, 1, status);
 }
-
+// Helper: Wait for the actual data (like the water level) to come back
 static int receive_read_response(uint8_t *value, uint8_t *status) {
+    // We pass '1' as max_len because our sensor reads currently expect a 1-byte payload
     return receive_module_response(value, 1, status);
 }
-
+// The main function to turn the mist on/off
 void set_pwm(uint8_t duty) {
     uint8_t status = 0;
     uint8_t ack = 0;
+    // 1. Send the formatted UART frame to the module
     send_set_command(SET_PWM_DUTY, duty);
+    // 2. Wait for the module to confirm it has updated the PWM output
     receive_set_response(&ack, &status);
 }
-
+// The main function to check the tank
 int read_water_level(uint8_t *level) {
+    // 1. Send the 'Get Status' command frame
     send_read_command(GET_WATER_LEVEL_STATUS);
     uint8_t status;
+    // 2. Parse the module's response frame to extract the water level byte
     return receive_read_response(level, &status);
 }
 
@@ -171,30 +186,32 @@ void button_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
-
+// Handles the DHT20 sensor over I2C
 void humidity_task(void *arg) {
     uint8_t data[7];
-    uint8_t trigger_cmd[] = { 0xAC, 0x33, 0x00 };
+    uint8_t trigger_cmd[] = { 0xAC, 0x33, 0x00 }; // Standard command to start a reading
     while (1) {
         // --- Read DHT20 humidity ---
         i2c_master_write_to_device(I2C_MASTER_NUM, DHT20_ADDR, trigger_cmd, 3, pdMS_TO_TICKS(100));
         vTaskDelay(pdMS_TO_TICKS(80));
-        esp_err_t err = i2c_master_read_from_device(I2C_MASTER_NUM, DHT20_ADDR, data, 7, pdMS_TO_TICKS(100));
+        esp_err_t err = i2c_master_read_from_device(I2C_MASTER_NUM, DHT20_ADDR, data, 7, pdMS_TO_TICKS(100)); //Read the 7 bytes of data back from the sensor
         if (err == ESP_OK && (data[0] & 0x80) == 0) {
+            // Conversion formula from DHT20 Datasheet
+            // Humidity (%) = (S_rh / 2^20) * 100
             uint32_t raw_hum = ((uint32_t)data[1] << 12) | ((uint32_t)data[2] << 4) | (data[3] >> 4);
             humidity = (float)raw_hum * 100.0 / 1048576.0;
         }
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Wait 2 seconds before checking again
     }
 }
-
+// Monitors the water level and shuts things down if the tank is empty
 void water_guard_task(void *arg) {
     uint8_t water_level = 0;
     int result;
     int uart_error_count = 0;
 
     while (1) {
-        result = read_water_level(&water_level);
+        result = read_water_level(&water_level); // Ask the module for the current water status
         
         // result > 0 means we successfully received a data payload
         if (result > 0) {
@@ -202,7 +219,7 @@ void water_guard_task(void *arg) {
             
             // Evaluate physical sensor state (Assuming 0 means empty)
             if (water_level == 0) {
-                water_ok = 0; 
+                water_ok = 0; // 0 = empty, 1 = ok
             } else {
                 water_ok = 1; 
             }
@@ -221,7 +238,7 @@ void water_guard_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
-
+// The "Brain" task: Decisions, Screen Updates, and Logic
 void control_task(void *arg) {
     char line[17]; // 16 chars + null terminator
     
@@ -267,12 +284,13 @@ void control_task(void *arg) {
                     // Read potentiometer and update threshold
                     int raw = 0;
                     adc_oneshot_read(adc_handle, POT_ADC_CHANNEL, &raw);
+                    // Linear mapping of 12-bit ADC (0-4095) to Threshold Range (20-80)
                     humidity_threshold = POT_THRESHOLD_MIN +
                         (raw * (POT_THRESHOLD_MAX - POT_THRESHOLD_MIN)) / 4095;
 
                     if (humidity < humidity_threshold) set_pwm(PWR);
                     else set_pwm(0);
-
+            
                     if (xSemaphoreTake(lcd_mutex, pdMS_TO_TICKS(100))) {
                         hd44780_gotoxy(&lcd, 0, 0);
                         hd44780_puts(&lcd, "Mode: AUTO      "); // Padded

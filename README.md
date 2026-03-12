@@ -18,7 +18,7 @@ An automated environmental control system built using the **ESP-IDF** framework 
 | Component | Function | Interface |
 | :--- | :--- | :--- |
 | **ESP32-S3** | Main Microcontroller | N/A |
-| **DHT20** | Humidity & Temperature Sensor | I2C |
+| [**DHT20**](https://www.digikey.com/en/products/detail/sparkfun-electronics/18364/14635373) | Humidity & Temperature Sensor | I2C |
 | [**Piezo Atomizer**](https://www.bestmodulescorp.com/en/bm52o5221-1.html) | Mist Generation & Water Level Detection | UART |
 | **16x2 LCD (HD44780)** | User Interface | GPIO (4-bit mode) |
 | **Potentiometer** | Threshold Setting | ADC (Analog) |

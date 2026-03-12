@@ -9,6 +9,7 @@
 #include <string.h>
 #include "driver/i2c.h"
 #include "esp_log.h"
+#include "esp_adc/adc_oneshot.h"
 #include "hd44780.h"
 #include "ets_sys.h"
 #include "esp_idf_lib_helpers.h"
@@ -16,8 +17,10 @@
 
 // --- DEFINITIONS ---
 #define BUTTON_PIN GPIO_NUM_5
-#define HUMIDITY_THRESHOLD 42
-#define PWR 125
+#define POT_ADC_CHANNEL ADC_CHANNEL_6  // GPIO1 on most ESP32 variants
+#define POT_THRESHOLD_MIN 20            // Minimum adjustable threshold (%)
+#define POT_THRESHOLD_MAX 80            // Maximum adjustable threshold (%)
+#define PWR 255
 #define I2C_MASTER_SCL_IO 21
 #define I2C_MASTER_SDA_IO 20
 #define I2C_MASTER_NUM I2C_NUM_0
@@ -44,6 +47,10 @@
 volatile int button_value = 0; // 0: OFF, 1: ON, 2: AUTO
 volatile float humidity = 0;
 volatile int water_ok = 1;
+volatile int humidity_threshold = 42; // Adjusted at runtime by potentiometer
+
+// ADC handle (initialised in app_main, used in humidity_task)
+static adc_oneshot_unit_handle_t adc_handle;
 
 // Mutex for LCD access
 SemaphoreHandle_t lcd_mutex;
@@ -169,6 +176,7 @@ void humidity_task(void *arg) {
     uint8_t data[7];
     uint8_t trigger_cmd[] = { 0xAC, 0x33, 0x00 };
     while (1) {
+        // --- Read DHT20 humidity ---
         i2c_master_write_to_device(I2C_MASTER_NUM, DHT20_ADDR, trigger_cmd, 3, pdMS_TO_TICKS(100));
         vTaskDelay(pdMS_TO_TICKS(80));
         esp_err_t err = i2c_master_read_from_device(I2C_MASTER_NUM, DHT20_ADDR, data, 7, pdMS_TO_TICKS(100));
@@ -256,15 +264,21 @@ void control_task(void *arg) {
                     break;
 
                 case 2: // AUTO
-                    if (humidity < HUMIDITY_THRESHOLD) set_pwm(PWR);
+                    // Read potentiometer and update threshold
+                    int raw = 0;
+                    adc_oneshot_read(adc_handle, POT_ADC_CHANNEL, &raw);
+                    humidity_threshold = POT_THRESHOLD_MIN +
+                        (raw * (POT_THRESHOLD_MAX - POT_THRESHOLD_MIN)) / 4095;
+
+                    if (humidity < humidity_threshold) set_pwm(PWR);
                     else set_pwm(0);
 
                     if (xSemaphoreTake(lcd_mutex, pdMS_TO_TICKS(100))) {
                         hd44780_gotoxy(&lcd, 0, 0);
                         hd44780_puts(&lcd, "Mode: AUTO      "); // Padded
                         
-                        // Format humidity, pad remainder with spaces to prevent artifacts
-                        snprintf(line, sizeof(line), "H: %-4.1f%%        ", humidity); 
+                        // Show humidity and the current threshold set by the pot
+                        snprintf(line, sizeof(line), "H:%-4.1f T:%2d%%   ", humidity, humidity_threshold);
                         hd44780_gotoxy(&lcd, 0, 1);
                         hd44780_puts(&lcd, line);
                         xSemaphoreGive(lcd_mutex);
@@ -282,6 +296,17 @@ void app_main(void) {
     // Hardware Init
     gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
     gpio_set_pull_mode(BUTTON_PIN, GPIO_PULLUP_ONLY);
+
+    // ADC init for potentiometer
+    adc_oneshot_unit_init_cfg_t adc_cfg = {
+        .unit_id = ADC_UNIT_1,
+    };
+    adc_oneshot_new_unit(&adc_cfg, &adc_handle);
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,   // 0–3.3V range
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_oneshot_config_channel(adc_handle, POT_ADC_CHANNEL, &chan_cfg);
     
     i2c_master_init();
     hd44780_init(&lcd);

@@ -17,7 +17,7 @@
 
 // --- DEFINITIONS ---
 #define BUTTON_PIN GPIO_NUM_5
-#define POT_ADC_CHANNEL ADC_CHANNEL_6  // GPIO1 on most ESP32 variants
+#define POT_ADC_CHANNEL ADC_CHANNEL_6
 #define POT_THRESHOLD_MIN 20            // Minimum adjustable threshold (%)
 #define POT_THRESHOLD_MAX 80            // Maximum adjustable threshold (%)
 #define PWR 255
